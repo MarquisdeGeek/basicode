@@ -1,0 +1,1698 @@
+<!doctype html>
+<html>
+
+<head>
+</head>
+
+<body>
+
+ <script type="text/javascript" src="epl/epl.js"></script>
+ <script type="text/javascript" src="epl/lexer.js"></script>
+ <script type="text/javascript" src="epl/parser.js"></script>
+ <script type="text/javascript" src="epl/evaluator.js"></script>
+ <script type="text/javascript" src="filesystem.js"></script>
+ 
+<!-- 
+	BasiCode2 interpreter - version 0.3
+	Copyright 2012 Steven Goodwin
+	All Rights Reserved
+	
+	Contact stevengoodwin using his g.mail account
+	
+	Boilerplate header. No idea of license yet. Suggestions?
+	
+	Developer note: This is NOT the correct way to write a language parser. I know how to
+	write proper parser, this was an experiment to see how far I could take this alternate
+	approach. Ok?
+-->
+
+	<!-- 
+	Changes for 0.4
+	* Improved (i.e. unified) UI handler. This stops start/step from getting confused
+	
+		
+	Changes for 0.3
+	* Fixed bug in For-next loop, reporting the wrong inner loop
+	* Fixed bug in retrieving IN$ as string
+	* Better context-sensitive textual UI on buttons
+	* Added print parsing
+	* Added expression parsing
+	* Added conditional parsing
+	* Added DIM functionality
+	* Added Array parsing
+	* Improved regexes to assignment to support arrays and strings
+	
+	! Expression parser comes from http://www.codeproject.com/Articles/345888/How-to-write-a-simple-interpreter-in-JavaScript
+	
+	
+	Changes for 0.2
+	* All code instructions must no longer be parsed in numeric order
+	* More strict delinearation between BC2 & BC3 routines
+	* Random number bug fixed
+	* Synchronous input handler
+	* Added keyboard flush when keyboard read
+	* Correctly handle the ; at the end of print statements
+	* Return both IN and IN$ on input routine
+	* Added pretty printer routine (line 150)
+	* Added read screen routine (line 220)
+	* Added exit program routine (line 950) - method wasn't registered
+	
+	Version 0.1
+	* Initial release
+	
+
+	
+	Known bugs:	
+	  
+	! processState.state = running/paused/awaiting input/terminated (pFN)
+	!! Verify the meaning of 'running/paused' etc. because the timer does the 'paused/running' thing. Is it just 'awaiting input?'
+
+	* Key handler doesn't handle > 1 key. So pressed A, then B, and releasing A says that nothing is pressed
+	
+	* Render cursor (flashing!?) at some point. Q. show this blinking all the time? Amend input to not draw cursor?
+	-->
+	
+	<!--
+	Gaping holes:
+	* INPUT [var]
+	* Cursor handling when it gets set out of range.
+	-->
+
+	<!--
+	The language:
+	http://translate.google.com/translate?hl=en&sl=de&u=http://de.wikipedia.org/wiki/BASICODE&ei=4iKpT--QBuSf0QWgiIiRBA&sa=X&oi=translate&ct=result&resnum=2&ved=0CCkQ7gEwAQ&prev=/search%3Fq%3DBascoders%26hl%3Den%26safe%3Doff%26client%3Dopera%26hs%3DxBR%26rls%3Den%26channel%3Dsuggest%26prmd%3Dimvns
+	(it's more fulsome than the English version)
+	
+	Commands - DATA DIM GOSUB GOTO IF END FOR INPUT ON NEXT READ REM RESTORE RETURN PRINT RUN STOP THEN STEP TAB TO 
+	Functions - ABS ATN COS EXP INT ASC LOG LEN SGN SIN    SQR TAN VAL    CHR $ MID $ LEFT $ RIGHT $    AND OR NOT
+	Arith - ^ * / + -
+	Comp = < > <> <= >= 
+	
+	-->
+	
+	<!--
+	Software:
+	http://www.sigord.co.uk/MISCL/BC/BCprogs.zip
+	
+	-->
+	
+	<table border=1>
+	<tr valign="top">
+		<td>Source code:<br><textarea id="source" cols=35 rows=20 wrap="hard">
+1000 A=1000 : GOTO 20
+1010 RESTORE : PRINT "Test1"
+1015 READ IT
+1020 FOR X=1 TO IT
+1030 READ HO,VE,T$
+1040 GOSUB 110
+1050 PRINT T$
+1060 NEXT X
+1070 END
+1500 DATA 2
+1510 DATA 10,3,"Hello"
+1520 DATA 11,5,"World!"
+	   
+	   </textarea>
+	   <br>
+	   Examples:<br/>
+	   <a onclick="javascript:loadExample('ex1.bas');return false;" href="#">Hello Word with DATA</a>
+	   <a onclick="javascript:loadExample('ex2.bas');return false;" href="#">QByahtzee.bas</a>
+	   
+	   </td>
+		<td>Screen:<br/><canvas id="screen" width="640" height="400"></canvas><br>
+			1. <button id="ui_parse" type="" onclick="javascript:doParse();return false;">Parse</button>
+			2. <button id="ui_runstop" disabled="true" type="" onclick="javascript:doRun();return false;">Run</button>
+			3. <button id="ui_step" type="" onclick="javascript:processStep();return false;">Step</button>
+			| Skin:
+			<button type="" onclick="javascript:refreshSkin('c64');return false;">C64</button>
+			<button type="" onclick="javascript:refreshSkin('zxspectrum');return false;">ZX Spectrum</button>
+			<button type="" onclick="javascript:refreshSkin('d32');return false;">Dragon 32</button>
+			<button type="" onclick="javascript:refreshSkin('bbc1');return false;">BBC Micro</button>
+
+		</td>
+		</tr>
+		<tr valign="top">
+			<td>Printer Output<br><textarea id="printer" cols="35" rows="5" wrap="hard"></textarea></td>
+			<td>Interpreter<br> <textarea id="ui_interpreter" cols="55" rows="3" wrap="hard">Type your program into the window on the left, and hit 'Parse'.</textarea><br>
+			<textarea id="state" cols="55" rows="5" wrap="hard"></textarea></td>
+		</tr>
+</table>
+
+	
+	
+    <script type="text/javascript">
+	function loadExample(filename) {
+	
+		var fileRef = new CSGXFile("software/"+filename);
+		fileRef.slerp(function(data) {
+			document.getElementById('source').innerHTML = data;
+		});
+	
+	}
+	
+	
+function trim(str) {
+	return str.replace(/^\s+|\s+$/g, "");
+}
+
+function isNumber (o) {
+  return o != null && ! isNaN (o-0);
+}
+
+
+BasiCodeUI = function() {}
+
+BasiCodeUI.init = function() {
+	document.getElementById('ui_runstop').disabled = true;
+	document.getElementById('ui_step').disabled = true;
+}
+
+BasiCodeUI.onChangeSource = function() {
+	document.getElementById('ui_parse').disabled = false;
+}
+
+BasiCodeUI.onParse = function() {
+	document.getElementById('ui_interpreter').innerHTML = "Parsed... Now press 'Run'";
+	document.getElementById('ui_runstop').innerHTML = "Run";
+	document.getElementById('ui_runstop').disabled = false;
+	document.getElementById('ui_step').disabled = true;
+
+}
+
+BasiCodeUI.onStart = function() {
+	document.getElementById('ui_runstop').innerHTML = "Stop";
+	document.getElementById('ui_interpreter').innerHTML = "Program started";
+	document.getElementById('ui_step').disabled = true;
+}
+
+BasiCodeUI.onStop = function() {
+	document.getElementById('ui_runstop').innerHTML = "Run";
+	document.getElementById('ui_interpreter').innerHTML = "Stopped";
+	document.getElementById('ui_step').disabled = false;
+	
+}
+
+BasiCodeUI.onStep = function() {
+}
+
+
+
+
+function raiseError(str) {
+	alert(str == undefined ? "Undefined error" : str);
+	document.getElementById('ui_runstop').disabled = true;
+}
+
+
+CodeLine = function(num) {
+	this.lineNumber = parseInt(num, 10);
+	this.nextLineNumber = 0;	// OPT: IDEA. Pre-store/cache these
+	this.instructions = new Array();
+}
+
+CodeLine.prototype.process = function(processState) {
+	for(var instr in this.instructions) {
+		this.instructions[instr].process(processState);
+	}
+}
+
+CodeLine.prototype.toString = function() {
+	var str = "Line "+this.lineNumber+"\n";
+
+	for(var instr in this.instructions) {
+		str += "  Instr: "+this.instructions[instr].toString()+"\n";
+	}
+
+return str;
+}
+
+CodeLine.parse = function(str) {
+	var split = str.match(/^\s*(\d+)\s+(.*)\s*$/m);
+	if (split) {
+		var line = new CodeLine(split[1]);
+		var colon = split[2].split(':');
+		
+		for(var instr=0;instr<colon.length;++instr) {
+			var numOfQuotes = (colon[instr].split('"').length - 1);
+			if (numOfQuotes & 1 == 1) {	// there's an odd number quote, so we failed to correctly split
+				// join this and the next text together to rebuild the string(BUGWARN)
+				var cmd = colon[instr] + ":" + colon[instr+1];
+				line.addInstruction(CodeInstruction.parse(cmd)).lineNumber = line.lineNumber;
+				++instr;
+			} else {
+				line.addInstruction(CodeInstruction.parse(colon[instr])).lineNumber = line.lineNumber;
+			}
+		}
+
+	return line;
+	}
+	
+	return null;
+}
+
+CodeLine.prototype.addInstruction = function(instr) {
+	if (instr) {
+		this.instructions.push(instr);
+	}
+	return instr;	// to chain
+}
+
+
+cbGoto = function(nextLine) {
+	this.nextLine = parseInt(nextLine, 10);
+}
+
+cbGoto.prototype.process = function(processState) {
+	processState.gotoLineNumber(this.nextLine);
+}
+
+
+cbGosub = function(nextLine) {
+	this.nextLine = parseInt(nextLine, 10);
+}
+
+cbGosub.prototype.process = function(processState) {
+	processState.gosubLineNumber(this.nextLine);
+}
+
+
+cbReturn = function() {
+}
+
+cbReturn.prototype.process = function(processState) {
+	processState.returnSubroutine();
+}
+
+
+
+cbForLoop = function(varname, startValue, endValue, stepValue) {
+	this.varname = trim(varname);
+	this.startValue = startValue;
+	this.endValue = endValue;
+	this.stepValue = stepValue;
+}
+
+cbForLoop.prototype.process = function(processState) {
+	processState.prepareLoop(this);
+}
+
+
+
+cbNextLoop = function(varname) {
+	this.varname = trim(varname);
+}
+
+cbNextLoop.prototype.process = function(processState) {
+	processState.repeatLoop(this.varname);
+}
+
+
+
+cbAssign = function(varname, value) {
+	this.varname = varname;
+	this.value = value;
+}
+
+cbAssign.prototype.process = function(processState) {
+	var value = processState.evaluateExpression(this.value);
+	processState.dictionary.setValue(this.varname, value);
+}
+
+
+cbConditional = function(condition, result) {
+	this.condition = condition;
+	this.result = new CodeInstruction(result);
+}
+
+cbConditional.prototype.process = function(processState) {
+	var condition = this.condition;
+	// Since BASIC used = for assignment and condition, we
+	// switch it for the more standard ==
+	condition = condition.replace(/([^\<\>])(=)([^\<\>])/g, "$1==$3");
+		
+	if (processState.evaluateCondition(condition)) {
+		if (this.result.method == null && isNumber(this.result.string)) {	// say IF.. THEN 2000 is fairly common, and the only? case where an 'expression' evaluates to an statement
+			processState.gotoLineNumber(this.result);
+		} else {
+			this.result.process(processState);
+		}
+	}
+}
+
+cbOnGoto = function(expression, targetLines) {
+	this.expression = expression;
+	this.targetLines = targetLines.split(',');
+}
+
+cbOnGoto.prototype.process = function(processState) {
+	var value = processState.evaluateExpression(this.expression) - 1;		// -1 because ON counts from 1, not zero
+	var nextLine = this.targetLines[value];
+	if (nextLine) {
+		processState.gotoLineNumber(nextLine);
+	}
+}
+
+cbOnGosub = function(expression, targetLines) {
+	this.expression = expression;
+	this.targetLines = targetLines.split(',');
+}
+
+cbOnGosub.prototype.process = function(processState) {
+	var value = processState.evaluateExpression(this.expression) - 1;		// -1 because ON counts from 1, not zero
+	var nextLine = this.targetLines[value];
+	if (nextLine) {
+		processState.gosubLineNumber(nextLine);
+	}
+}
+
+
+cbStop = function() {
+}
+
+cbStop.prototype.process = function(processState) {
+	processState.stop();
+}
+
+
+cbDimArray = function(arrayData) {
+	this.arrayList = arrayData;
+}
+
+cbDimArray.prototype.process = function(processState) {
+	var arrayList = this.arrayList.split(",");
+	for(var a=0;a<arrayList.length;++a) {
+		var arrayInfo = /^\s*(.*?)\s*\(\s*(\d*)\s*\)/.exec(arrayList[a]);
+		var arrayName = arrayInfo[1];
+		var arraySize = arrayInfo[2];
+		var defaultValue = /\$/.test(arrayName) ? "" : "0";
+		
+		for(var i=0;i<=arraySize;++i) {
+			var varname = arrayName + "(" + i + ")";
+			processState.dictionary.setValue(varname, defaultValue);
+		}
+	}
+}
+
+
+cbDataRead = function(varList) {
+	this.varList = varList.split(',');
+}
+
+cbDataRead.prototype.process = function(processState) {
+	for(var v in this.varList) {
+		var value = processState.getNextDataElement();
+		// TODO: Could add mismatch type here
+		if (value.substr(0,1) == '"') {
+			value = value.substr(1, value.length-2);
+		}
+		//
+		if (value) {
+			processState.dictionary.setValue(this.varList[v], value);
+		} else {
+			processState.runtimeError("Out of data");
+		}
+	}
+}
+
+
+cbDataBlock = function(dataList) {
+	this.dataList = dataList.split(',');
+}
+
+cbDataBlock.prototype.process = function(processState) {
+}
+
+
+cbDataRestore = function(lineNumber) {
+	// NOTE: BasiCode 2 did not support the line number parameter
+	this.lineNumber = lineNumber ? lineNumber : 0;
+}
+
+cbDataRestore.prototype.process = function(processState) {
+	processState.setDataPointer(this.lineNumber);
+}
+
+
+
+cbRun = function() {
+}
+
+cbRun.prototype.process = function(processState) {
+	processState.clear();
+	processState.gotoLineNumber(0);
+}
+
+
+cbInput = function(inputVariable) {
+	this.inputVariable = inputVariable;
+}
+
+cbInput.prototype.process = function(processState) {
+	processState.startInput(this.inputVariable);
+}
+
+cbPrint = function(args) {
+	this.args = args;
+}
+
+cbPrint.prototype.process = function(processState) {
+
+	var txt = this.args;	
+	var doNewline = true;
+	var output = "";
+	
+	// TODO : process this! we need to scan character by character, to get the commas, semi-colons, and expressions right
+	
+		// we're processing a string. 
+		// Read each character
+		var sReadUnknown = 0;
+		var sReadConstant = 1;
+		var sReadExpression = 2;
+		var sSkipWhitespace = 3;
+		var param = "";
+
+		var state = sReadUnknown;
+		for(var idx = 0;idx<=txt.length;++idx) {			
+			var c = idx==txt.length ? '\0' : txt.substr(idx, 1);
+			switch(state) {
+				case 0:	// sReadUnknown
+					if (c == '"') {
+						state = sReadConstant;
+						param = "";
+					} else if (c == ';') {
+						doNewline = false;
+						state = sSkipWhitespace;
+					} else if (c == ',') {
+						//TODO: pad output
+						var x2 = BasiCodeSystem.cursorX + output.length;
+						var nextTab = (x2 | 7) + 1;	// round up to next 8
+						var extraSpaces = nextTab - x2;
+						
+						while(extraSpaces--) {
+							output += " ";
+						}
+						
+						state = sSkipWhitespace;
+					} else if (c == ' ' || c == '\t') {
+						// nop - shouldn't only happen at the start
+
+					} else if (c == '\0') {
+						//idx = txt.length+1;	// we'll sub 1 later
+						
+					} else {
+						--idx;
+						state = sReadExpression;
+						param = "";
+					}
+					break;
+					
+				case 3:	// sSkipWhitespace;				
+					if (c == ' ' || c == '\t') {
+						// nop
+					} else {
+						--idx;
+						state = sReadUnknown;
+					}
+					break;
+					
+				case 1:	// sReadConstant
+					if (c == '"' || c == '\0') {
+						output += param;
+						state = sReadUnknown;
+					} else {
+						param += c;
+					}
+					break;
+					
+				case 2:	// 	sReadExpression
+					// we cheat hear, because basic can't have , or ; in an expression
+					if (c == ';' || c == ',' || c == '\0') {
+						output += processState.evaluateExpression(param);
+						state = sReadUnknown;
+						--idx;	// rewind to parse	
+					} else {
+						param += c;
+					}
+					break;
+			}
+		}
+
+	// ! Might have to rely on the expressions _not_ containing [,;"] to simply do this. (if we're going to use JS's eval)
+	BasiCodeSystem.drawString(output, BasiCodeSystem.cursorX, BasiCodeSystem.cursorY);
+	
+	BasiCodeSystem.cursorX += output.length;
+	if (doNewline) {
+		BasiCodeSystem.cursorX = 0;
+		BasiCodeSystem.cursorY++;
+	}
+}
+
+
+CodeInstruction = function(str) {
+	str = trim(str);
+	this.string = str;
+	this.method = null;
+	
+	var args;
+	if (args = str.match(/^goto\s+(\d+)/i)) {
+		this.method = new cbGoto(args[1]);
+	} else if (args = str.match(/^gosub\s+(.*)/i)) {
+		this.method = new cbGosub(args[1]);
+	} else if (args = str.match(/^return(\s+|$)/i)) {
+		this.method = new cbReturn();
+		
+	} else if (args = str.match(/^rem(\s+|$)/i)) {
+		this.method = null;
+		
+	// control structures
+	} else if (args = str.match(/^if\s+(.*)\s+then\s+(.*)/i)) {
+		this.method = new cbConditional(args[1], args[2]);
+		
+	} else if (args = str.match(/^for\s+(\w+)\s*=(.*)\s*to\s*(.*)\s*step\s+(.*)/i)) {
+		this.method = new cbForLoop(args[1], args[2], args[3], args[4]);
+	} else if (args = str.match(/^for\s+(\w+)\s*=(.*)\s*to\s*(.*)/i)) {
+		this.method = new cbForLoop(args[1], args[2], args[3], 1);
+	} else if (args = str.match(/^next(\s+\w+|$)/i)) {
+		this.method = new cbNextLoop(args[1]);
+	
+	} else if (args = str.match(/^on\s+(.*)\s+goto\s+(.*)/i)) {
+		this.method = new cbOnGoto(args[1], args[2]);
+	} else if (args = str.match(/^on\s+(.*)\s+gosub\s+(.*)/i)) {
+		this.method = new cbOnGosub(args[1], args[2]);
+	} else if (args = str.match(/^stop\s*/i)) {
+		this.method = new cbStop();
+	} else if (args = str.match(/^end\s*/i)) {
+		this.method = new cbStop();
+
+	// Data handling
+	} else if (args = str.match(/^dim\s+(.*)/i)) {
+		this.method = new cbDimArray(args[1], args[2]);
+	} else if (args = str.match(/^read\s+(.*)/i)) {
+		this.method = new cbDataRead(args[1]);
+	} else if (args = str.match(/^data\s*(.*)/i)) {
+		this.method = new cbDataBlock(args[1]);
+	} else if (args = str.match(/^restore$/i)) {
+		this.method = new cbDataRestore();
+	} else if (args = str.match(/^restore\s+(.*)/i)) {
+		this.method = new cbDataRestore(args[1]);
+		
+	} else if (args = str.match(/^input\s+(.*)/i)) {
+		this.method = new cbInput(args[1]);
+	} else if (args = str.match(/^print\s+(.*)/i)) {
+		this.method = new cbPrint(args[1]);
+
+	
+	// variable assignment
+	} else if (args = str.match(/^(?:let\s+)?(\w+\$(?:\(.*?\))+)\s*=\s*(\".*?\")/i)) {	// $(array)
+		this.method = new cbAssign(args[1], args[2]);
+	} else if (args = str.match(/^let\s+(\w+\$)\s*=\s*(\".*?\")/i)) {	// $
+		this.method = new cbAssign(args[1], args[2]);
+	} else if (args = str.match(/^(?:let\s+)?(\w+\$?(?:\(.*?\))+)\s*=\s*(.*)/i)) {	// any(array)
+		this.method = new cbAssign(args[1], args[2]);
+	} else if (args = str.match(/^(?:let\s+)?(\w+)\s*=\s*(.*)/i)) {	// int
+		this.method = new cbAssign(args[1], args[2]);
+
+		
+	// implicit assignments - place at end as a final capture
+	} else if (args = str.match(/^(\w+\$)\s*=\s*(\".*?\")/i)) {
+		this.method = new cbAssign(args[1], args[2]);
+	} else if (args = str.match(/^(\w+)\s*=\s*(.*)/i)) {
+		this.method = new cbAssign(args[1], args[2]);
+
+	}
+}
+
+CodeInstruction.parse = function(cmd) {
+	return new CodeInstruction(cmd);
+}
+
+CodeInstruction.prototype.process = function(processState) {
+	if (this.method) {
+		this.method.process(processState);
+	}
+}
+
+CodeInstruction.prototype.toString = function() {
+	var str = "Line "+this.lineNumber+"\n";
+	str += this.string;
+	return str;
+}
+
+
+VariableDictionary = function(state) {
+	this.dict = new Object();
+	this.backState = state;
+}
+
+VariableDictionary.prototype.validateIdentifier = function(id) {
+	id = id.toUpperCase();
+	
+	if (id.length > 2 && id.substr(2,1) != "$") {
+		// OPT: runtimeWarning if this occurs
+		// BUGWARN: Can't do this when arrays (e.g. A(3) are passed in)
+		//id = id.substr(0,2);
+	}
+	// REM: A, AT, BY, CN, CT, FN, FR, HO, GR, IF, IN$, RV, SR, SR$, and VE  are all reserved
+	// All vars beginning O are reserved
+	
+	// Change array references to their evaluated version
+	var matches = /^(.*?)\((.*?)\)/.exec(id);
+	if (matches) {
+		id = matches[1] + "(" + this.backState.evaluateExpression(matches[2]) + ")";
+	}
+
+	
+
+	return id;
+}
+
+VariableDictionary.prototype.getValue = function(varname) {
+	varname = this.validateIdentifier(varname);
+	return this.dict[varname];
+}
+
+VariableDictionary.prototype.setValue = function(varname, value) {
+
+	varname = this.validateIdentifier(varname);
+	// TODO: Arrays (of N dimensions)
+	
+	// Non-strings are parsed out to integers, so JS can perform maths on them
+	if (varname.indexOf("$") == -1) {	
+		value = parseFloat(value);
+	}
+	this.dict[varname] = value;
+}
+
+VariableDictionary.prototype.toString = function() {
+
+	var str = "";
+
+	for (var varname in this.dict) {
+		if (varname.indexOf("$") == -1) {
+			str += varname + "="+this.dict[varname]+"\t";
+		} else {
+			str += varname + "=\""+this.dict[varname]+"\"\t";
+		}
+	}
+	str += "\n";
+	
+	return str;
+}
+
+
+// The in-memory process
+BasiCodeState = function() {
+	this.callStack = new Array();
+	this.loopStack = new Array();
+	this.dataInstruction = null;
+	this.dataOffset = 0;
+	this.dictionary = new VariableDictionary(this);
+	this.dictionary.setValue("PI", 3.1415926);
+	this.dictionary.setValue("E", Math.E);
+	this.m_bIsRunning = false;
+	this.isAwaitingInput = false;
+}
+	
+	
+BasiCodeState.prototype.clear = function() {
+	// TODO - clear any other vars etc?
+	BasiCodeSystem.cursorX = BasiCodeSystem.cursorY = 0;
+	
+	this.dictionary.setValue("HO", BasiCodeSystem.cursorX);
+	this.dictionary.setValue("VE", BasiCodeSystem.cursorY);
+}
+	
+BasiCodeState.prototype.runtimeWarning = function(message) {
+	raiseError(message);
+}
+
+BasiCodeState.prototype.runtimeError = function(message) {
+	raiseError(message);
+	this.stop();
+}
+
+BasiCodeState.prototype.start = function() {
+	this.m_bIsRunning = true;
+	
+	BasiCodeUI.onStart();
+}
+
+BasiCodeState.prototype.stop = function() {
+	this.m_bIsRunning = false;
+	BasiCodeUI.onStop();
+}
+
+BasiCodeState.prototype.isRunning = function() {
+	return this.m_bIsRunning;
+}
+
+
+
+BasiCodeState.prototype.lprint = function(str) {
+	BasiCodeSystem.lprint(str);
+}
+
+BasiCodeState.prototype.setDataPointer = function(lineIndex) {
+	this.dataInstruction = this.getInstructionAtOrAfterLine(lineIndex);
+	this.dataOffset = 0;
+}
+
+BasiCodeState.prototype.getInstructionAtOrAfterLine = function(targetLineNum) {
+	var smallestDiff = 99999;
+	var bestInstruction = null;
+	for(var idx in this.instructionList) {
+		var instruction = this.instructionList[idx];
+		var diff = instruction.lineNumber - targetLineNum;
+		if (diff < 0) {
+			// nop - it's before our target
+		} else if (diff == 0) {
+			return instruction;
+		} else if (diff < smallestDiff) {
+			bestInstruction = instruction;
+			smallestDiff = diff;
+		}
+	}
+	return bestInstruction;
+}
+
+BasiCodeState.prototype.getNextDataElement = function() {
+	// If no data ptr has been restored, get the first instruction
+	var currentInstruction = this.dataInstruction;
+	if (!currentInstruction) {
+		currentInstruction = this.getInstructionAtOrAfterLine(0);	// this is a slow way, but it's BASIC!
+	}
+	//
+	if (!currentInstruction) {
+		return null;
+	} else if (!this.dataInstruction) {
+		return null;
+	} else if (currentInstruction && currentInstruction.method instanceof cbDataBlock) {
+		// (and if there's data left)
+		if (this.dataOffset < currentInstruction.method.dataList.length) {
+			++this.dataOffset;
+			return currentInstruction.method.dataList[this.dataOffset - 1];
+		}
+	}
+
+	// No data available. Move on to next instruction
+	this.dataInstruction = this.dataInstruction.nextInstruction;
+	this.dataOffset = 0;
+	
+	return this.getNextDataElement();
+}
+
+BasiCodeState.prototype.startInput = function(inputVariable) {
+	this.isAwaitingInput = true;
+	this.isSystemInput = false;
+	this.inputString = "";
+	this.inputVariable = inputVariable;
+}
+
+BasiCodeState.prototype.startInputSystem = function() {
+	this.isAwaitingInput = true;
+	this.isSystemInput = true;
+	this.inputString = "";
+}
+
+
+BasiCodeState.prototype.evaluateExpression = function(exp) {
+	if (!exp) {
+		return "";
+	}
+	// TODO: Lots of stuff, with brackets and everything :)
+	// Allowed functions : TAB (only in PRINT statement), ABS, SGN, INT, SQR, SIN, COS, TAN, ATN, 
+	//    EXP, LOG, ASC, VAL, LEN, CHR$, LEFT$, MID$, RIGHT$ 
+	// Q. in print - use TAB(x) , and ; Q. 
+	// Q. Can I use JS 'eval' for this?
+	if (isNumber(exp)) {
+		return parseFloat(exp);
+	}
+	//
+	try {
+		var tokens = lex(exp);
+		var parseTree = parse(tokens);
+		var output = evaluate(this, parseTree, false);
+		return output;
+	} catch (e) {
+		this.runtimeError(e);
+		return "";
+	}
+}
+
+BasiCodeState.prototype.evaluateCondition = function(cond) {
+	// TODO: Lots of stuff, with brackets and everything :)
+	try {
+		var tokens = lex(cond);
+		var parseTree = parse(tokens);
+		var output = evaluate(this, parseTree, true);
+		return parseFloat(output) ? true : false;
+	} catch (e) {
+		this.runtimeError(e);
+		return true;
+	}
+	
+}
+
+
+BasiCodeState.prototype.prepareLoop = function(loopDefinition) {
+	var loopData = new Object();
+	loopData.id = loopDefinition.varname;
+	loopData.end = loopDefinition.endValue;
+	loopData.step = loopDefinition.stepValue;
+	loopData.loopInstruction = this.pcInstruction.nextInstruction;
+	
+	this.loopStack.push(loopData);
+	
+	this.dictionary.setValue(loopData.id, this.evaluateExpression(loopDefinition.startValue));
+}
+
+BasiCodeState.prototype.repeatLoop = function(varname) {
+var loopData = this.loopStack[this.loopStack.length-1];
+
+	if (varname != "" && varname != loopData.id) {
+		this.runtimeError("Looping back with "+varname+" even though it's not the most recent.");
+	}
+	
+	var current = this.dictionary.getValue(loopData.id);
+	current += this.evaluateExpression(loopData.step);
+	this.dictionary.setValue(loopData.id, current);	// in most BASICs, the loop counter was kept for after the loop
+	
+	if (current > this.evaluateExpression(loopData.end)) {
+		this.loopStack.pop();
+	} else {
+		this.pcInstruction = loopData.loopInstruction;
+	}
+}
+
+
+	
+BasiCodeState.prototype.gotoLineNumber = function(lineNumber) {
+	this.pcInstruction = this.getInstructionAtOrAfterLine(parseInt(lineNumber, 10));
+}
+
+BasiCodeState.prototype.gosubLineNumber = function(lineNumber) {
+	this.callStack.push(this.pcInstruction.nextInstruction);
+	this.pcInstruction = this.getInstructionAtOrAfterLine(parseInt(lineNumber, 10));
+}
+
+BasiCodeState.prototype.returnSubroutine = function(lineNumber) {
+	if (this.callStack.length == 0) {
+		this.runtimeError("Attempting to return from non-existent subroutine");
+	} else {
+		this.pcInstruction = this.callStack.pop();
+	}
+}
+
+BasiCodeState.prototype.toString = function() {
+	if (!this.pcInstruction) {
+		return "[End of code]";
+	}
+	
+	var str = "PC = "+ this.pcInstruction.lineNumber+"\n";
+	
+	str += this.dictionary.toString();
+
+	str += "Call stack: ";
+	for (var v in this.callStack) {
+		str += this.callStack[v]+"\t";
+	}
+	str += "\n";
+
+	return str;
+}
+
+//
+// Source code tree (static during execution)
+//
+BasiCodeTree = function(code) {
+	this.clear();
+	this.parse(code);
+}
+
+BasiCodeTree.prototype.clear = function() {
+	this.code = "";
+	this.codeLines = new Array();
+	this.instructionList = new Array();
+}
+
+BasiCodeTree.prototype.parse = function(code) {
+	
+	var lines = code ? code.match(/^.*([\n\r]+|$)/gm) : new Array();
+
+	for(var idx in lines) {
+		this.addLine(CodeLine.parse(lines[idx]));
+	}
+}
+
+BasiCodeTree.prototype.addLine = function(line) {
+	if (line) {
+		this.code += line + "\n";
+		this.codeLines.push(line); 
+		
+		// We actually iterate through an instruction list, containing each statement block
+		// So remove the instructions from the line, and build a new list
+		for(var instr in line.instructions) {
+			this.addInstruction(line.instructions[instr]);
+		}
+		
+	}
+}
+
+BasiCodeTree.prototype.addInstruction = function(instruction) {
+	this.instructionList.push(instruction);
+	
+	// Add a reference to function as a linked list
+	if (this.instructionList.length > 1) {
+		this.instructionList[this.instructionList.length-2].nextInstruction = this.instructionList[this.instructionList.length-1];
+	}
+}
+
+
+BasiCodeTree.prototype.toString = function() {
+	var str = "";
+	for(var idx in this.codeLines) {
+		str += this.codeLines[idx].toString();
+	}
+	return str;
+}
+
+//
+// Over-arching program
+//
+BasiCodeProgram = function(code) {
+	this.source = new BasiCodeTree(code);
+	this.state = new BasiCodeState();
+}
+
+BasiCodeProgram.prototype.run = function() {
+	this.state.instructionList = this.source.instructionList;
+	this.state.pcInstruction = this.state.instructionList[0];
+}
+
+BasiCodeProgram.prototype.start = function() {
+	this.state.start();
+}
+
+
+BasiCodeProgram.prototype.stop = function() {
+	this.state.stop();
+}
+
+BasiCodeProgram.prototype.isRunning = function() {
+	return this.state.isRunning();
+}
+
+	
+// Returns from the pseudo-subroutine at 210 when any key is pressed
+// (BUGWARN: and released?)
+BasiCodeProgram.prototype.stepInputSystem = function() {
+	var key = BasiCodeSystem.getLastKey();
+		
+	if (key != "") {
+		var ascii = BasiCodeSystem.currentFont.getCodeFromAscii(key);
+		
+		this.state.dictionary.setValue("IN", key);
+		this.state.dictionary.setValue("IN$", String.fromCharCode(ascii));
+		this.state.returnSubroutine();
+		
+		this.state.isAwaitingInput = false;
+		
+		BasiCodeSystem.flushKeyboard();
+	}
+}
+
+	
+BasiCodeProgram.prototype.stepInputString = function() {
+	var key = BasiCodeSystem.getLastKey();
+	
+	if (key == "") {
+		this.state.isAwaitingKeyUp = false;
+	} else if (!this.state.isAwaitingKeyUp) {
+		if (key == 8 || key == 46) {	// delete or backspace (the latter normally being trapped by the browser)
+			BasiCodeSystem.drawString(" ", BasiCodeSystem.cursorX+this.state.inputString.length, BasiCodeSystem.cursorY);
+			this.state.inputString = this.state.inputString.substr(0,this.state.inputString.length-1);
+			this.state.isAwaitingKeyUp = true;
+		} else if (key == 13) {
+			this.state.dictionary.setValue(this.state.inputVariable, this.state.inputString);
+			this.state.isAwaitingInput = false;
+		} else if (key != "") {
+			this.state.inputString += String.fromCharCode(key);
+			this.state.isAwaitingKeyUp = true;
+		} 
+	}		
+
+	BasiCodeSystem.drawString(this.state.inputString, BasiCodeSystem.cursorX, BasiCodeSystem.cursorY);
+	BasiCodeSystem.drawString(String.fromCharCode(0), BasiCodeSystem.cursorX+this.state.inputString.length, BasiCodeSystem.cursorY);
+}
+
+	
+BasiCodeProgram.prototype.step = function() {
+	if (this.state.isAwaitingInput) {
+			
+		if (this.state.isSystemInput) {
+			this.stepInputSystem();
+		} else {
+			this.stepInputString();
+		}
+
+		return;
+	}
+
+
+	var currentInstruction = this.state.pcInstruction;
+	if (currentInstruction) {
+		
+		currentInstruction.process(this.state);
+		
+		if (this.state.pcInstruction == currentInstruction) {
+			this.state.pcInstruction = this.state.pcInstruction.nextInstruction;
+		}
+	}
+}
+
+BasiCodeSystem = function() {
+	BasiCodeSystem.currentScreen = new Array();
+}
+		
+BasiCodeSystem.setScreen = function(canvasID) {
+	BasiCodeSystem.canvas = document.getElementById(canvasID);
+	BasiCodeSystem.context = BasiCodeSystem.canvas.getContext('2d');
+	BasiCodeSystem.context.save();
+}
+		
+BasiCodeSystem.setScreenDimensions = function(screenW, screenH, tileW, tileH) {
+	BasiCodeSystem.screenW = screenW;
+	BasiCodeSystem.screenH = screenH;
+	BasiCodeSystem.tileW = tileW;
+	BasiCodeSystem.tileH = tileH;
+	BasiCodeSystem.clipCanvas(BasiCodeSystem.screenW * BasiCodeSystem.tileW, BasiCodeSystem.screenH * BasiCodeSystem.tileH);
+}
+
+		
+BasiCodeSystem.clipCanvas = function(cropWidth, cropHeight) {
+	BasiCodeSystem.context.restore();
+	BasiCodeSystem.context.save();
+	//
+	BasiCodeSystem.context.beginPath();
+	BasiCodeSystem.context.moveTo(0, 0);
+	BasiCodeSystem.context.lineTo(cropWidth, 0);
+	BasiCodeSystem.context.lineTo(cropWidth, cropHeight);
+	BasiCodeSystem.context.lineTo(0, cropHeight);
+	BasiCodeSystem.context.closePath();
+	BasiCodeSystem.context.clip();
+}
+
+BasiCodeSystem.setFont = function(font) {
+	BasiCodeSystem.currentFont = font;
+}
+
+BasiCodeSystem.clearScreen = function() {
+	BasiCodeSystem.currentScreen = new Array();
+
+	var screenWidth = BasiCodeSystem.canvas.width;
+	var screenHeight = BasiCodeSystem.canvas.height;
+	
+	// Not all the screen will be used, so blank it all out
+	BasiCodeSystem.clipCanvas(screenWidth, screenHeight);
+	BasiCodeSystem.context.fillStyle = "white";
+	BasiCodeSystem.context.fillRect(0, 0, screenWidth, screenHeight);
+	
+	// ...and only colour the necessary area.
+	BasiCodeSystem.clipCanvas(BasiCodeSystem.screenW * BasiCodeSystem.tileW, BasiCodeSystem.screenH * BasiCodeSystem.tileH);
+	BasiCodeSystem.context.fillStyle = BasiCodeSystem.clsColor;
+	BasiCodeSystem.context.fillRect(0, 0, BasiCodeSystem.screenW * BasiCodeSystem.tileW, BasiCodeSystem.screenH * BasiCodeSystem.tileH);
+	
+	BasiCodeSystem.cursorX = BasiCodeSystem.cursorY = 0;
+}
+
+BasiCodeSystem.drawString = function(text, x, y) {
+	var sx = x * BasiCodeSystem.tileW;
+	var sy = y * BasiCodeSystem.tileH;
+	
+	if (BasiCodeSystem.currentFont) {
+		BasiCodeSystem.currentFont.drawString(text, sx, sy);
+	}
+	
+	// NOTE: You can't rebuild the screen from this, since some programs adjust their data
+	// according to the size. (think about word wrap these days). Instead, consider this a
+	// free debugging tool, for checking output and whether the font has loaded.
+	for(var i=0;i<text.length;++i) {
+		BasiCodeSystem.currentScreen[x + i + y*BasiCodeSystem.screenW] = text.charCodeAt(i);
+	}
+
+}
+
+BasiCodeSystem.cursorX = 0;
+BasiCodeSystem.cursorY = 0;
+BasiCodeSystem.isBreakEnabled = true;
+BasiCodeSystem.lastKeyCode = "";
+BasiCodeSystem.gfxLastX = 0;
+BasiCodeSystem.gfxLastX = 0;
+BasiCodeSystem.currentFont = null;
+BasiCodeSystem.clsColor = "#4130A4";
+
+BasiCodeSystem.getLastKey = function() {
+	return BasiCodeSystem.lastKeyCode;
+}
+
+
+BasiCodeSystem.flushKeyboard = function() {
+	BasiCodeSystem.lastKeyCode = "";
+}
+BasiCodeSystem.applyKeyboardKeyUp = function(keyCode) {
+	BasiCodeSystem.lastKeyCode = "";
+}
+
+BasiCodeSystem.applyKeyboardKeyDown = function(keyCode) {
+	BasiCodeSystem.lastKeyCode = keyCode;
+}
+
+BasiCodeSystem.lprint = function(str) {
+	document.getElementById('printer').innerHTML += str;
+}
+
+BasiCodeSystem.enableBreak = function(state){
+	BasiCodeSystem.isBreakEnabled = state;
+}
+
+BasiCodeSystem.setGraphicPoint = function(x, y){
+	BasiCodeSystem.gfxLastX = x;
+	BasiCodeSystem.gfxLastY = y;
+}
+
+BasiCodeSystem.drawLineTo = function(x, y){
+	BasiCodeSystem.context.beginPath();
+    BasiCodeSystem.context.moveTo(BasiCodeSystem.gfxLastX, BasiCodeSystem.gfxLastY);
+    BasiCodeSystem.context.lineTo(x, y);
+    BasiCodeSystem.context.fill();
+	
+	BasiCodeSystem.gfxLastX = x;
+	BasiCodeSystem.gfxLastY = y;
+}
+
+BasiCodeSystem.setGraphicColor = function(color){
+	BasiCodeSystem.context.strokeStyle = "#"+color;	//TODO: determine palette
+}
+
+ //
+ // BasiCode 'system' library of pre-written routines
+ //
+ 
+// This, appears, to be a strictly BC3 method
+sysSystemReset = function() { this.lineNumber = 20; }
+sysSystemReset.prototype.toString = function() { return "system:sysSystemReset"; }
+sysSystemReset.prototype.process = function(processState) {
+	processState.clear();
+	processState.gotoLineNumber(1010);
+}
+
+sysClearTextScreen = function() { this.lineNumber = 100; }
+sysClearTextScreen.prototype.toString = function() { return "system:sysClearTextScreen"; }
+sysClearTextScreen.prototype.process = function(processState) {
+	BasiCodeSystem.clearScreen();
+	processState.returnSubroutine();
+}
+
+sysSetCursorPosition = function() { this.lineNumber = 110; }
+sysSetCursorPosition.prototype.toString = function() { return "system:sysSetCursorPosition"; }
+sysSetCursorPosition.prototype.process = function(processState) {
+	BasiCodeSystem.cursorX = processState.dictionary.getValue("HO");
+	BasiCodeSystem.cursorY = processState.dictionary.getValue("VE");
+	
+	// We validate the position, which allows the code to determine the screen size.
+	if (BasiCodeSystem.cursorX < 0) {
+		BasiCodeSystem.cursorX = 0;
+	} else if (BasiCodeSystem.cursorX >= BasiCodeSystem.screenW) {
+		BasiCodeSystem.cursorX = BasiCodeSystem.screenW - 1;
+	}
+	
+	if (BasiCodeSystem.cursorY < 0) {
+		BasiCodeSystem.cursorY = 0;
+	} else if (BasiCodeSystem.cursorY >= BasiCodeSystem.screenH) {
+		BasiCodeSystem.cursorY = BasiCodeSystem.screenH - 1;
+	}
+	 
+	processState.returnSubroutine();
+}
+
+sysGetCursorPosition = function() { this.lineNumber = 120; }
+sysGetCursorPosition.prototype.toString = function() { return "system:sysGetCursorPosition"; }
+sysGetCursorPosition.prototype.process = function(processState) {
+	processState.dictionary.setValue("HO", BasiCodeSystem.cursorX);
+	processState.dictionary.setValue("VE", BasiCodeSystem.cursorY);
+	processState.returnSubroutine();
+}
+
+sysReadKeystroke = function() { this.lineNumber = 200; }
+sysReadKeystroke.prototype.toString = function() { return "system:sysReadKeystroke"; }
+sysReadKeystroke.prototype.process = function(processState) {
+	// return key in IN$. Return empty string  if no key pressed.
+	var key = BasiCodeSystem.getLastKey();
+	var ascii = BasiCodeSystem.currentFont.getCodeFromAscii(key);
+	processState.dictionary.setValue("IN", ascii);
+	processState.dictionary.setValue("IN$", key);
+	processState.returnSubroutine();
+}
+
+sysReadKeystrokeSync = function() { this.lineNumber = 210; }
+sysReadKeystrokeSync.prototype.toString = function() { return "system:sysReadKeystrokeSync"; }
+sysReadKeystrokeSync.prototype.process = function(processState) {
+
+	processState.startInputSystem();
+}
+
+sysBeep = function() { this.lineNumber = 250; }
+sysBeep.prototype.toString = function() { return "system:sysBeep"; }
+sysBeep.prototype.process = function(processState) {
+	// TODO: is pitch and/or duration involved?
+	processState.returnSubroutine();
+}
+ 
+sysRandomNumber = function() { this.lineNumber = 260; }
+sysRandomNumber.prototype.toString = function() { return "system:sysRandomNumber"; }
+sysRandomNumber.prototype.process = function(processState) {
+	// Return random number between 0 and 1 in RV (0 <= RV < 1).
+	var rv = Math.random();
+	processState.dictionary.setValue("RV", rv);
+	processState.returnSubroutine();
+}
+ 
+sysFreeMemory = function() { this.lineNumber = 270; }
+sysFreeMemory.prototype.toString = function() { return "system:sysFreeMemory"; }
+sysFreeMemory.prototype.process = function(processState) {
+	// Return the amount of free memory in FR 
+	processState.dictionary.setValue("FR", 32*1024);
+	processState.returnSubroutine();
+}
+ 
+
+sysIntToString = function() { this.lineNumber = 300; }
+sysIntToString.prototype.toString = function() { return "system:sysIntToString"; }
+sysIntToString.prototype.process = function(processState) {
+	var sr = processState.dictionary.getValue("SR");
+	processState.dictionary.setValue("SR$", sr);
+	processState.returnSubroutine();
+}
+
+sysStringFormat = function() { this.lineNumber = 310; }
+sysStringFormat.prototype.toString = function() { return "system:sysStringFormat"; }
+sysStringFormat.prototype.process = function(processState) {
+	var sr = processState.dictionary.getValue("SR");
+	var ct = processState.dictionary.getValue("CT");
+	var cn = processState.dictionary.getValue("CN");
+	// Convert number SR to fixed width string, width=CT, places after decimal point=CN, returned in SR$, 
+	sr = sr.toFixed(cn);
+	sr = ("                 " + sr).slice(-ct);
+	processState.dictionary.setValue("SR$", sr);
+	processState.returnSubroutine();
+}
+
+sysPrinterString = function() { this.lineNumber = 350; }
+sysPrinterString.prototype.toString = function() { return "system:sysPrinterString"; }
+sysPrinterString.prototype.process = function(processState) {
+	// Print SR$ on the printer. 
+	var sr = processState.dictionary.getValue("SR$");
+	processState.lprint(sr);
+	processState.returnSubroutine();
+}
+
+sysPrinterCRLF = function() { this.lineNumber = 360; }
+sysPrinterCRLF.prototype.toString = function() { return "system:sysPrinterCRLF"; }
+sysPrinterCRLF.prototype.process = function(processState) {
+	// Carriage return and new line on the printer. 
+	processState.lprint("\r\n");
+	processState.returnSubroutine();
+}
+
+function systemInitialize(program) {
+	program.source.parse('10 GOTO 1000');
+}
+
+function systemInitialize2(program) {
+	program.source.addInstruction(new sysSystemReset());
+	program.source.addInstruction(new sysClearTextScreen());
+	program.source.addInstruction(new sysSetCursorPosition());
+	program.source.addInstruction(new sysGetCursorPosition());
+	program.source.addInstruction(new sysReadKeystroke());
+	program.source.addInstruction(new sysReadKeystrokeSync());
+	program.source.addInstruction(new sysBeep());
+	program.source.addInstruction(new sysRandomNumber());
+	program.source.addInstruction(new sysFreeMemory());
+	program.source.addInstruction(new sysBreakKey());
+	program.source.addInstruction(new sysIntToString());
+	program.source.addInstruction(new sysStringFormat());
+	program.source.addInstruction(new sysPrinterString());
+	program.source.addInstruction(new sysPrinterCRLF());
+}
+
+// BasiCode 3 - extra routines
+
+sysPrettyPrinter = function() { this.lineNumber = 150; }
+sysPrettyPrinter.prototype.toString = function() { return "system:sysPrettyPrinter"; }
+sysPrettyPrinter.prototype.process = function(processState) {
+	var text = processState.dictionary.getValue("SR$");
+	text = "   "+text+"   ";
+	BasiCodeSystem.drawString(text, BasiCodeSystem.cursorX, BasiCodeSystem.cursorY);
+	// mimic a newline, which applies to be implied (BUGWARN)
+	BasiCodeSystem.cursorX = 0;
+	BasiCodeSystem.cursorY++;
+	processState.returnSubroutine();
+}
+
+sysReadScreen = function() { this.lineNumber = 220; }
+sysReadScreen.prototype.toString = function() { return "system:sysReadScreen"; }
+sysReadScreen.prototype.process = function(processState) {
+	var ho = processState.dictionary.getValue("HO");
+	var ve = processState.dictionary.getValue("VE");
+	var screen = BasiCodeSystem.currentScreen[ho + ve*BasiCodeSystem.screenW];
+	
+	processState.dictionary.setValue("IN", screen);
+	processState.returnSubroutine();
+}
+
+sysBreakKey = function() { this.lineNumber = 280; }
+sysBreakKey.prototype.toString = function() { return "system:sysBreakKey"; }
+sysBreakKey.prototype.process = function(processState) {
+	// Disable the stop/break key (FR=1) or enable (FR=0). 
+	var fr = processState.dictionary.getValue("FR");
+	BasiCodeSystem.enableBreak(fr ? false : true);
+	processState.returnSubroutine();
+}
+
+sysPlaySound = function() { this.lineNumber = 400; }
+sysPlaySound.prototype.toString = function() { return "system:sysPlaySound"; }
+sysPlaySound.prototype.process = function(processState) {
+	// Delivery of the volume, duration and pitch in the variables SV, SD and SP
+}
+
+sysGfxCls = function() { this.lineNumber = 600; }
+sysGfxCls.prototype.toString = function() { return "system:sysGfxCls"; }
+sysGfxCls.prototype.process = function(processState) {
+	// initialize the graphics mode, clear the screen
+	BasiCodeSystem.clearScreen();
+}
+
+sysGfxSetPoint = function() { this.lineNumber = 620; }
+sysGfxSetPoint.prototype.toString = function() { return "system:sysGfxSetPoint"; }
+sysGfxSetPoint.prototype.process = function(processState) {
+	// Set a point 
+	// Handing over the position in the variables HO and VE 
+	// Transfer of the color in the variable CN
+	var ho = processState.dictionary.getValue("HO");
+	var ve = processState.dictionary.getValue("VE");
+	var cn = processState.dictionary.getValue("CN");
+	
+	BasiCodeSystem.setGraphicPoint(ho, ve);
+	BasiCodeSystem.setGraphicColor(cn);
+
+}
+
+sysGfxDrawLine = function() { this.lineNumber = 630; }
+sysGfxDrawLine.prototype.toString = function() { return "system:sysGfxDrawLine"; }
+sysGfxDrawLine.prototype.process = function(processState) {
+	// Draw a line starting from the current position of the graphic
+	// Delivery of the final point in the variables HO and VE 
+	// Transfer of the color in the variable CN
+	// Set the video position if previously set by a point
+	
+	var ho = processState.dictionary.getValue("HO");
+	var ve = processState.dictionary.getValue("VE");
+	var cn = processState.dictionary.getValue("CN");
+	
+	BasiCodeSystem.drawLineTo(ho, ve);
+	BasiCodeSystem.setGraphicColor(cn);
+}
+
+sysGfxDrawText = function() { this.lineNumber = 640; }
+sysGfxDrawText.prototype.toString = function() { return "system:sysGfxDrawText"; }
+sysGfxDrawText.prototype.process = function(processState) {
+	// Output a string in graphics mode
+	// Handing over the position in the variables HO and VE 
+	// Transfer of the string in the variable SR $
+	var ho = processState.dictionary.getValue("HO");
+	var ve = processState.dictionary.getValue("VE");
+	var sr = processState.dictionary.getValue("SR$");
+
+	BasiCodeSystem.drawString(sr, ho, ve);
+
+}
+
+sysReadKeystrokeTimed = function() { this.lineNumber = 450; }
+sysReadKeystrokeTimed.prototype.toString = function() { return "system:sysReadKeystrokeTimed"; }
+sysReadKeystrokeTimed.prototype.process = function(processState) {
+	// Wait a certain time for a keypress
+	// Handing over the duration in the variable SD (in 100 millisecond units)
+	if (BasiCodeSystem.keyStart) {
+	}
+	
+	var key = BasiCodeSystem.getLastKey();
+	processState.dictionary.setValue("IN$", key);
+
+
+}
+
+sysExitProgram = function() { this.lineNumber = 950; }
+sysExitProgram.prototype.toString = function() { return "system:sysExitProgram"; }
+sysExitProgram.prototype.process = function(processState) {
+	processState.stop();
+	alert("Exit program at 950");
+}
+
+function systemInitialize3(program) {
+	program.source.addInstruction(new sysPlaySound());
+	program.source.addInstruction(new sysGfxCls());
+	program.source.addInstruction(new sysPrettyPrinter());	
+	program.source.addInstruction(new sysGfxSetPoint());
+	program.source.addInstruction(new sysGfxDrawLine());
+	program.source.addInstruction(new sysGfxDrawText());
+	program.source.addInstruction(new sysExitProgram());	
+}	
+
+
+/*
+           
+ GOSUB 450 Wait a certain time for a keypress
+           Handing over the duration in the variable SD (in 100 millisecond units)
+
+ GOSUB 500 Opening a file
+           Transfer of the name in the variable $ NF
+           Establishing a file identifier in the variable NF
+ GOSUB 540 Read a string from a file
+           Transfer of the identifier in the variable NF
+           Return the string in the variable $ IN
+ 560 GOSUB writing a string to a file
+           Transfer of the identifier in the variable NF
+           Transfer of the string in the variable SR $
+ GOSUB 580 closing a file
+           Transfer of the identifier in the variable NF
+
+
+ */
+ 
+ //
+ // Glue logic for the web page
+ //
+ var program;
+ function initialize(){
+ 	program = new BasiCodeProgram();
+}
+
+FontHandler = function(resource, fontX,fontY, regionsOnX,regionsOnY) {
+	this.fontResource = resource;
+	this.fontX = fontX;
+	this.fontY = fontY;
+	this.regionsOnX = regionsOnX;
+	this.regionsOnY = regionsOnY;
+}
+
+FontHandler.prototype.getCodeFromAscii = function(ascii) {
+	// This mapping is tied directly to the font image.
+	// Use the SGX engine, and it's font library, for a more data-driven approach.
+	
+	// The order in the file is:
+	// @abcdefghijklmno
+	// pqrstuvw...
+	//  !"#
+	// 01234567
+	// -ABCD
+	// REM: http://www.asciitable.com/
+	if (ascii == 64) {	// @
+		return 0;
+	} else if (ascii > 64 && ascii < 97) {	// upper case happen to match to C64
+		return ascii;
+	} else if (ascii >= 97 && ascii < 128) {	// lower case
+		return ascii-96;
+	} else if (ascii >= 32 && ascii < 63) {		// space and punctuation
+		return ascii;
+	} else if (ascii == 0) {		// hack to support a cursor
+		return 256;
+	}
+	return 32;	// space		
+}
+
+FontHandler.prototype.drawString = function(text, sx, sy) {
+	for(var i=0;i<text.length;++i) {
+		var ascii = this.getCodeFromAscii(text.charCodeAt(i));
+		var srcX = 	this.fontX + Math.floor(ascii % this.regionsOnX) * BasiCodeSystem.tileW;
+		var srcY = 	this.fontY + Math.floor(ascii / this.regionsOnX) * BasiCodeSystem.tileH;
+
+		BasiCodeSystem.context.drawImage(this.fontResource, srcX,srcY, BasiCodeSystem.tileW,BasiCodeSystem.tileH,   sx,sy, BasiCodeSystem.tileW,BasiCodeSystem.tileH); 
+		
+		sx += BasiCodeSystem.tileW;
+	}
+}
+
+
+function zxconverter(ascii) {
+	return ascii-32;
+}
+
+function d32converter(ascii) {
+	return ascii-32;
+}
+
+function bbcconverter(ascii) {
+	if (ascii == 32) {
+		return 127;
+	}
+	return ascii-33;
+}
+
+function refreshSkin(name) {
+	loadSkin(name, function() {
+		BasiCodeSystem.clearScreen();
+		doParse();
+		doRun();
+	});
+}
+
+function loadSkin(name, callback) {
+
+	var resource = new Image();
+
+	resource.onload = function(ev) {
+		var font;
+		
+		switch(name) {
+			case "c64":
+			default:
+				font = new FontHandler(resource, 64,214, 16,16);
+				BasiCodeSystem.clsColor = "#4130A4";
+				BasiCodeSystem.setScreenDimensions(40, 25, 16, 16);	// screen size, tile width/height
+				break;
+			case "zxspectrum":
+				font = new FontHandler(resource, 0,0, 32,3);
+				font.getCodeFromAscii = zxconverter;
+				BasiCodeSystem.clsColor = "#C9C9C9";
+				BasiCodeSystem.setScreenDimensions(32, 24, 16, 16);	// screen size, tile width/height
+				break;
+			case "d32":
+				font = new FontHandler(resource, 60,50, 32, 4);
+				font.getCodeFromAscii = d32converter;
+				BasiCodeSystem.clsColor = "#00ff00";
+				BasiCodeSystem.setScreenDimensions(32, 24, 16, 24);	// screen size, tile width/height
+				break;
+			case "bbc1":
+				font = new FontHandler(resource, 0,0, 32, 3);
+				font.getCodeFromAscii = bbcconverter;
+				BasiCodeSystem.clsColor = "#000000";
+				BasiCodeSystem.setScreenDimensions(40, 32, 16, 16);	// screen size, tile width/height
+				break;
+		}
+		
+		BasiCodeSystem.setFont(font);	
+		BasiCodeSystem.clearScreen();
+		if (callback) {
+			callback();
+		}		
+	}
+	// NOTE: The C64 source image comes from:
+	// http://upload.wikimedia.org/wikipedia/de/f/f6/Font-C64-Kleinschrift.png
+	resource.src = "skins/"+name+"/font.png";
+}
+
+
+function doParse(){
+	var code =  document.getElementById('source').value;
+	
+	program.state.stop();
+	program.source.clear();
+	
+	systemInitialize(program);
+	systemInitialize2(program);
+	systemInitialize3(program);
+	
+	program.source.parse(code);
+	program.run();
+	
+	BasiCodeSystem.clearScreen();
+	BasiCodeUI.onParse();
+}
+
+function doRun(){
+	
+	if (program.isRunning()) {
+		program.stop();
+	} else {
+		program.start();
+		doStep();
+	}
+}
+	
+function doStep() {
+	program.timerID = setTimeout("doStep();",1000/30);
+
+	if (program.isRunning()) {
+		processStep();
+		
+		if (!program.isRunning()) {			
+			raiseError("BasiCode program stopped because it ran out of code to process...");
+		}
+		
+		// Do this in the main loop to ensure the update loops are in sync, otherwise we might
+		// not get an 'instruction increment'
+		if (BasiCodeSystem.getLastKey() == 27 && BasiCodeSystem.isBreakEnabled) {
+			program.stop();
+		}
+		
+	}
+}
+
+function processStep() {
+	program.step();
+	
+	document.getElementById('state').innerHTML = program.state.toString();			
+
+	if (program.state.pcInstruction) {			
+		document.getElementById('ui_interpreter').innerHTML = program.state.pcInstruction.toString();			
+	}
+
+}
+
+
+initialize();
+loadSkin("c64");
+BasiCodeSystem.setScreen("screen");
+BasiCodeSystem.clearScreen();
+BasiCodeUI.init();
+
+
+document.onkeyup=function(evnt) { 
+	if (!evnt) {
+		evnt = event;
+	}
+	BasiCodeSystem.applyKeyboardKeyUp(evnt.keyCode);
+}
+
+document.onkeydown=function(evnt) { 
+	if (!evnt) {
+		evnt = event;
+	}
+  
+	BasiCodeSystem.applyKeyboardKeyDown(evnt.keyCode);
+}
+
+ 
+</script>
+    
+</body></html>
